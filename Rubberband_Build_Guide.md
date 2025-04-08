@@ -65,8 +65,8 @@ cpp = 'c++'
 strip = 'strip'
 
 [built-in options]
-c_args = [ '-isysroot', sysroot, '-arch', 'arm64', '-mios-simulator-version-min=8' ]
-cpp_args = [ '-isysroot', sysroot, '-arch', 'arm64', '-mios-simulator-version-min=8', '-stdlib=libc++' ]
+c_args = [ '-isysroot', sysroot, '-arch', 'arm64', '-mios-simulator-version-min=8', '-fembed-bitcode' ]
+cpp_args = [ '-isysroot', sysroot, '-arch', 'arm64', '-mios-simulator-version-min=8', '-stdlib=libc++', '-fembed-bitcode' ]
 cpp_link_args = [ '-isysroot', sysroot, '-arch', 'arm64', '-mios-simulator-version-min=8', '-stdlib=libc++', '-framework', 'CoreFoundation']
 ```
 
@@ -109,10 +109,10 @@ ninja -C build/macos-universal
 
 ### 3. 🧬 Merge iOS Simulator Slices into a Universal Simulator Library
 
-If you built both arm64 and x86_64 for the simulator, merge them into one universal simulator binary:
+If you built both arm64 and x86_64 versions of the simulator, merge them into one universal `.a` file that supports both architectures:
 
 ```bash
-lipo -create   build/xcframework-slices/librubberband_simulator.arm64.a   build/xcframework-slices/librubberband_simulator.x86_64.a   -output build/xcframework-slices/librubberband_simulator.universal.a
+lipo -create   build/ios-simulator-x86_64/librubberband.a   build/ios-simulator-arm64/librubberband.a   -output build/ios-simulator-universal/librubberband.a
 ```
 
 ---
@@ -121,12 +121,13 @@ lipo -create   build/xcframework-slices/librubberband_simulator.arm64.a   build/
 
 Only tag the libraries that you built in step 2. Remove any command here if you didn’t build that platform.
 
+> 📝 **Note:** If you did not create a universal simulator build in step 3, you need to change the simulator tagging line below.  
+> Replace the universal simulator path (`build/ios-simulator-universal/librubberband.a`) with the path to the actual simulator `.a` file you built (either arm64 or x86_64).
+
 ```bash
 xcrun --sdk iphoneos lipo -create -output build/xcframework-slices/librubberband_device.arm64.a build/ios-device/librubberband.a
 
-xcrun --sdk iphonesimulator lipo -create -output build/xcframework-slices/librubberband_simulator.arm64.a build/ios-simulator-arm64/librubberband.a
-
-xcrun --sdk iphonesimulator lipo -create -output build/xcframework-slices/librubberband_simulator.x86_64.a build/ios-simulator-x86_64/librubberband.a
+xcrun --sdk iphonesimulator lipo -create -output build/xcframework-slices/librubberband_simulator.universal.a build/ios-simulator-universal/librubberband.a
 
 xcrun --sdk macosx lipo -create -output build/xcframework-slices/librubberband_macos_universal.a build/macos-universal/librubberband.a
 ```
@@ -135,7 +136,9 @@ xcrun --sdk macosx lipo -create -output build/xcframework-slices/librubberband_m
 
 ### 5. 📦 Create the Final XCFramework
 
-Only include the platforms you actually built. Remove any unused ones to avoid errors.
+Only include the platform libraries you actually tagged in step 4. If you did not build or tag a simulator universal or macOS library, remove those lines accordingly.
+
+> 📝 For example, if you only built and tagged for iOS device and arm64 simulator, use the path to the `arm64` simulator `.a` file you tagged instead of the universal one.
 
 ```bash
 xcodebuild -create-xcframework   -library build/xcframework-slices/librubberband_device.arm64.a -headers rubberband   -library build/xcframework-slices/librubberband_simulator.universal.a -headers rubberband   -library build/xcframework-slices/librubberband_macos_universal.a -headers rubberband   -output build/Rubberband.xcframework
