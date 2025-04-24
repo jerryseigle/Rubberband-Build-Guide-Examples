@@ -5,284 +5,356 @@
     Created: 13 Apr 2025 1:40:22am
     Author:  Jerry Seigle
 
-    This file implements the MainComponent class logic.
-
     Features:
     - Multi-track audio playback
     - Real-time pitch and tempo adjustment
     - Volume and mute control per track
-    - Loop playback toggle
-    - RMS and Peak metering per track (live updating)
+    - Loop playback toggle (live)
+    - RMS and Peak metering
 
   ==============================================================================
 */
 
-#include "MainComponent.h"
+#include "MainComponent.h" // Include the header for this component
 
 //==============================================================================
-// Constructor — sets up UI components, audio files, processors, and timer
+// Constructor — sets up all UI elements and initializes audio
 MainComponent::MainComponent()
-    : state(Stopped)
+    : state(Stopped) // Initial playback state
 {
-    // === UI SETUP ===
+    // === PLAY BUTTON SETUP ===
+    addAndMakeVisible(playButton); // Show play button
+    playButton.setButtonText("Play"); // Button label
+    playButton.setColour(juce::TextButton::buttonColourId, juce::Colours::green); // Green color
+    playButton.onClick = [this] { playButtonClicked(); }; // Bind click event
 
-    addAndMakeVisible(playButton);
-    playButton.setButtonText("Play");
-    playButton.setColour(juce::TextButton::buttonColourId, juce::Colours::green);
-    playButton.onClick = [this] { playButtonClicked(); };
+    // === STOP BUTTON SETUP ===
+    addAndMakeVisible(stopButton); // Show stop button
+    stopButton.setButtonText("Stop"); // Button label
+    stopButton.setColour(juce::TextButton::buttonColourId, juce::Colours::red); // Red color
+    stopButton.onClick = [this] { stopButtonClicked(); }; // Bind click event
+    stopButton.setEnabled(false); // Disabled by default
 
-    addAndMakeVisible(stopButton);
-    stopButton.setButtonText("Stop");
-    stopButton.setColour(juce::TextButton::buttonColourId, juce::Colours::red);
-    stopButton.onClick = [this] { stopButtonClicked(); };
-    stopButton.setEnabled(false); // Disabled until playback begins
+    // === POSITION LABEL ===
+    addAndMakeVisible(positionLabel); // Show position label
+    positionLabel.setText("Position: 0:00.000", juce::dontSendNotification); // Initial text
 
-    addAndMakeVisible(positionLabel);
-    positionLabel.setText("Position: 0:00.000", juce::dontSendNotification);
-
-    addAndMakeVisible(pitchSlider);
-    pitchSlider.setRange(-12.0, 12.0, 0.1);
-    pitchSlider.setTextValueSuffix(" st");
-    pitchSlider.setValue(0.0);
+    // === PITCH SLIDER ===
+    addAndMakeVisible(pitchSlider); // Show pitch slider
+    pitchSlider.setRange(-12.0, 12.0, 0.1); // Range in semitones
+    pitchSlider.setTextValueSuffix(" st"); // Label suffix
+    pitchSlider.setValue(0.0); // Default pitch
     pitchSlider.onValueChange = [this] {
-        musicalProcessor.setPitchSemiTones(pitchSlider.getValue());
+        musicalProcessor.setPitchSemiTones(pitchSlider.getValue()); // Update pitch
     };
 
-    addAndMakeVisible(tempoSlider);
-    tempoSlider.setRange(0.5, 2.0, 0.01);
-    tempoSlider.setTextValueSuffix("x");
-    tempoSlider.setValue(1.0);
+    // === TEMPO SLIDER ===
+    addAndMakeVisible(tempoSlider); // Show tempo slider
+    tempoSlider.setRange(0.5, 2.0, 0.01); // Range from half speed to double
+    tempoSlider.setTextValueSuffix("x"); // Label suffix
+    tempoSlider.setValue(1.0); // Default tempo
     tempoSlider.onValueChange = [this] {
-        float inverted = 2.0f - tempoSlider.getValue();
-        drumProcessor.setTempoRatio(inverted);
-        musicalProcessor.setTempoRatio(inverted);
+        float inverted = 2.0f - tempoSlider.getValue(); // Calculate tempo
+        drumProcessor.setTempoRatio(inverted); // Apply to drums
+        musicalProcessor.setTempoRatio(inverted); // Apply to music
     };
 
-    addAndMakeVisible(formantCheckbox);
-    formantCheckbox.setButtonText("Preserve Formant");
-    formantCheckbox.setToggleState(false, juce::dontSendNotification);
+    // === FORMANT PRESERVE TOGGLE ===
+    addAndMakeVisible(formantCheckbox); // Show checkbox
+    formantCheckbox.setButtonText("Preserve Formant"); // Label
+    formantCheckbox.setToggleState(false, juce::dontSendNotification); // Default off
     formantCheckbox.onClick = [this] {
-        bool preserve = formantCheckbox.getToggleState();
-        drumProcessor.setFormantEnabled(preserve);
+        bool preserve = formantCheckbox.getToggleState(); // Get state
+        drumProcessor.setFormantEnabled(preserve); // Update processors
         musicalProcessor.setFormantEnabled(preserve);
     };
 
-    addAndMakeVisible(loopToggleButton);
-    loopToggleButton.setButtonText("Loop Playback");
-    loopToggleButton.setToggleState(false, juce::dontSendNotification);
+    // === LOOP TOGGLE BUTTON ===
+    addAndMakeVisible(loopToggleButton); // Show loop toggle
+    loopToggleButton.setButtonText("Loop Playback"); // Loop label
+    loopToggleButton.setToggleState(false, juce::dontSendNotification); // Default off
 
-    // === AUDIO SETUP ===
+    // Loop toggle behavior: clean handling using next read position
+    loopToggleButton.onClick = [this] {
+        bool shouldLoop = loopToggleButton.getToggleState(); // Get toggle state
 
-    formatManager.registerBasicFormats(); // MP3, WAV, etc.
+        for (auto& track : tracks) // Apply to all tracks
+        {
+            if (track->readerSource)
+            {
+                if (!shouldLoop)
+                {
+                    // Before disabling looping, flush loop buffer offset
+                    juce::int64 currentPos = track->readerSource->getNextReadPosition();
+                    track->readerSource->setNextReadPosition(currentPos); // Set current read position
+                }
 
-    juce::File resourceDir = juce::File::getSpecialLocation(
-        juce::File::SpecialLocationType::invokedExecutableFile).getParentDirectory();
+                track->readerSource->setLooping(shouldLoop); // Enable/disable looping
+            }
 
-    trackFiles = {
-        resourceDir.getChildFile("Vocals.mp3"),
-        resourceDir.getChildFile("Bass.mp3"),
-        resourceDir.getChildFile("Drums.mp3"),
+            track->transportSource.setLooping(shouldLoop); // Sync transport loop
+
+            track->wasLooping = shouldLoop; // Track loop state
+        }
     };
 
-    DBG("Resource path: " + resourceDir.getFullPathName());
+    // === AUDIO FORMAT MANAGER SETUP ===
+    formatManager.registerBasicFormats(); // Support WAV, MP3, etc.
 
-    // (OPTIONAL) Absolute paths for macOS testing
-    /*
+    juce::File resourceDir = juce::File::getSpecialLocation(
+        juce::File::SpecialLocationType::invokedExecutableFile).getParentDirectory(); // Locate app folder
+
+    // Load static test files
     trackFiles = {
         juce::File("/Users/jerryseigle/Downloads/Vocals.mp3"),
         juce::File("/Users/jerryseigle/Downloads/Bass.mp3"),
         juce::File("/Users/jerryseigle/Downloads/Drums.mp3"),
     };
-    */
+    // (OPTIONAL) Absolute paths for testing on computer or any simulator
+        /*
+        trackFiles = {
+            juce::File("/Users/jerryseigle/Downloads/Vocals.mp3"),
+            juce::File("/Users/jerryseigle/Downloads/Bass.mp3"),
+            juce::File("/Users/jerryseigle/Downloads/Drums.mp3"),
+        };
+        */
 
-    // Load and configure each track
+    // === LOAD TRACKS ===
     for (auto& file : trackFiles)
     {
-        auto* reader = formatManager.createReaderFor(file);
+        auto* reader = formatManager.createReaderFor(file); // Create reader
         if (reader != nullptr)
         {
-            auto newTrack = std::make_unique<Track>();
+            auto newTrack = std::make_unique<Track>(); // New track object
 
-            newTrack->readerSource = std::make_unique<juce::AudioFormatReaderSource>(reader, true);
-            newTrack->transportSource.setSource(newTrack->readerSource.get(), 0, nullptr, reader->sampleRate);
+            newTrack->readerSource = std::make_unique<juce::AudioFormatReaderSource>(reader, true); // Source
+            newTrack->transportSource.setSource(newTrack->readerSource.get(), 0, nullptr, reader->sampleRate); // Connect
 
-            juce::String name = file.getFileNameWithoutExtension();
+            juce::String name = file.getFileNameWithoutExtension(); // Track name
             newTrack->isPercussive = name.containsIgnoreCase("drum") ||
                                      name.containsIgnoreCase("loop") ||
-                                     name.containsIgnoreCase("percussion");
+                                     name.containsIgnoreCase("percussion"); // Detect percussion
 
-            newTrack->volumeSlider.setRange(0.0, 1.0, 0.01);
-            newTrack->volumeSlider.setValue(1.0);
+            newTrack->volumeSlider.setRange(0.0, 1.0, 0.01); // Set volume range
+            newTrack->volumeSlider.setValue(1.0); // Default volume
             newTrack->volumeSlider.onValueChange = [track = newTrack.get()] {
-                track->currentVolume = (float)track->volumeSlider.getValue();
+                track->currentVolume = (float)track->volumeSlider.getValue(); // Save volume
             };
 
-            newTrack->muteButton.setButtonText("Mute");
-            newTrack->muteButton.setToggleState(false, juce::dontSendNotification);
+            newTrack->muteButton.setButtonText("Mute"); // Label mute
+            newTrack->muteButton.setToggleState(false, juce::dontSendNotification); // Off by default
             newTrack->muteButton.onClick = [track = newTrack.get()] {
-                track->isMuted = track->muteButton.getToggleState();
+                track->isMuted = track->muteButton.getToggleState(); // Save mute
             };
 
-            newTrack->rmsLabel.setText("RMS: --", juce::dontSendNotification);
+            newTrack->rmsLabel.setText("RMS: --", juce::dontSendNotification); // Init meter
             newTrack->peakLabel.setText("Peak: --", juce::dontSendNotification);
 
-            addAndMakeVisible(newTrack->volumeSlider);
-            addAndMakeVisible(newTrack->muteButton);
-            addAndMakeVisible(newTrack->rmsLabel);
-            addAndMakeVisible(newTrack->peakLabel);
+            addAndMakeVisible(newTrack->volumeSlider); // Show volume
+            addAndMakeVisible(newTrack->muteButton); // Show mute
+            addAndMakeVisible(newTrack->rmsLabel); // Show RMS
+            addAndMakeVisible(newTrack->peakLabel); // Show peak
 
-            tracks.push_back(std::move(newTrack));
+            tracks.push_back(std::move(newTrack)); // Add to list
         }
     }
 
-    setSize(500, 150 + 90 * (int)tracks.size());
+    setSize(500, 150 + 90 * (int)tracks.size()); // Window size
     setAudioChannels(0, 2); // Stereo output
-    startTimerHz(10);       // UI updates every 100ms
+    startTimerHz(10); // Update UI every 100ms
 }
 
 //==============================================================================
-// Destructor — shuts down audio system
+// Destructor — shuts down audio on destruction
 MainComponent::~MainComponent()
 {
-    shutdownAudio();
+    shutdownAudio(); // Stops audio threads and frees resources
 }
 
 //==============================================================================
-// Prepares each track and processor before playback begins
+// Called when playback starts — allocates audio buffers and prepares processors
 void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
-    for (auto& track : tracks)
+    for (auto& track : tracks) // Prepare each track's transport
         track->transportSource.prepareToPlay(samplesPerBlockExpected, sampleRate);
 
-    drumProcessor.prepare(sampleRate, 2);
-    musicalProcessor.prepare(sampleRate, 2);
+    drumProcessor.prepare(sampleRate, 2); // Prepare drum processor
+    musicalProcessor.prepare(sampleRate, 2); // Prepare music processor
 }
 
 //==============================================================================
-// Releases audio resources after playback stops
+// Called when audio stops — releases any resources held
 void MainComponent::releaseResources()
 {
-    for (auto& track : tracks)
+    for (auto& track : tracks) // Release transport buffers
         track->transportSource.releaseResources();
 }
 
 //==============================================================================
-// Called repeatedly to fill the output buffer with audio
+// Main audio rendering function — fills the output buffer
 void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
 {
-    bufferToFill.clearActiveBufferRegion();
+    bufferToFill.clearActiveBufferRegion(); // Clear previous contents
 
-    juce::AudioBuffer<float> drumMix, musicalMix;
-    drumMix.setSize(2, bufferToFill.numSamples);
-    musicalMix.setSize(2, bufferToFill.numSamples);
+    juce::AudioBuffer<float> drumMix, musicalMix; // Temporary mix buffers
+    drumMix.setSize(2, bufferToFill.numSamples); // Stereo drums
+    musicalMix.setSize(2, bufferToFill.numSamples); // Stereo music
 
+    // === PROCESS PERCUSSION ===
     drumProcessor.processBlock([this](juce::AudioBuffer<float>& buffer) {
-        mixTracksIntoBuffer(true, buffer);
+        mixTracksIntoBuffer(true, buffer); // Mix percussive tracks
     }, drumMix);
 
+    // === PROCESS MUSIC ===
     musicalProcessor.processBlock([this](juce::AudioBuffer<float>& buffer) {
-        mixTracksIntoBuffer(false, buffer);
+        mixTracksIntoBuffer(false, buffer); // Mix melodic tracks
     }, musicalMix);
 
+    // === MERGE TO FINAL OUTPUT ===
     for (int ch = 0; ch < bufferToFill.buffer->getNumChannels(); ++ch)
     {
-        bufferToFill.buffer->addFrom(ch, 0, drumMix, ch, 0, bufferToFill.numSamples);
-        bufferToFill.buffer->addFrom(ch, 0, musicalMix, ch, 0, bufferToFill.numSamples);
+        bufferToFill.buffer->addFrom(ch, 0, drumMix, ch, 0, bufferToFill.numSamples); // Add drums
+        bufferToFill.buffer->addFrom(ch, 0, musicalMix, ch, 0, bufferToFill.numSamples); // Add music
     }
 }
 
 //==============================================================================
-// Mixes audio from tracks into a buffer, applies volume, and updates metering
+// Mixes track audio into buffer with volume and metering
 void MainComponent::mixTracksIntoBuffer(bool percussive, juce::AudioBuffer<float>& buffer)
 {
-    buffer.clear();
+    buffer.clear(); // Start clean
 
     for (auto& track : tracks)
     {
-        if (track->isPercussive != percussive)
+        if (track->isPercussive != percussive) // Skip non-matching types
             continue;
 
-        track->lastBuffer.setSize(2, buffer.getNumSamples());
-        juce::AudioBuffer<float>& temp = track->lastBuffer;
+        track->lastBuffer.setSize(2, buffer.getNumSamples()); // Prepare meter buffer
+        juce::AudioSourceChannelInfo info(&track->lastBuffer, 0, buffer.getNumSamples()); // Setup temp info
 
-        juce::AudioSourceChannelInfo info(&temp, 0, buffer.getNumSamples());
-        track->transportSource.getNextAudioBlock(info);
+        track->transportSource.getNextAudioBlock(info); // Read audio data
 
-        float volume = track->isMuted ? 0.0f : track->currentVolume;
+        float volume = track->isMuted ? 0.0f : track->currentVolume; // Mute or apply volume
 
         for (int ch = 0; ch < 2; ++ch)
-            buffer.addFrom(ch, 0, temp, ch, 0, buffer.getNumSamples(), volume);
+        {
+            buffer.addFrom(ch, 0, track->lastBuffer, ch, 0, buffer.getNumSamples(), volume); // Mix into output
+        }
     }
 }
 
 //==============================================================================
-// Handles layout and position of UI components
+// Handles layout for all UI components
 void MainComponent::resized()
 {
-    auto area = getLocalBounds().reduced(10);
-    area.removeFromTop(80);
+    auto area = getLocalBounds().reduced(10); // Shrink edges
+    area.removeFromTop(80); // Reserve space for top padding
 
-    playButton.setBounds(area.removeFromTop(30));
-    stopButton.setBounds(area.removeFromTop(30));
-    positionLabel.setBounds(area.removeFromTop(30));
-    pitchSlider.setBounds(area.removeFromTop(40));
-    tempoSlider.setBounds(area.removeFromTop(40));
-    formantCheckbox.setBounds(area.removeFromTop(30));
-    loopToggleButton.setBounds(area.removeFromTop(30));
+    playButton.setBounds(area.removeFromTop(30)); // Place play button
+    stopButton.setBounds(area.removeFromTop(30)); // Place stop button
+    positionLabel.setBounds(area.removeFromTop(30)); // Place position label
+    pitchSlider.setBounds(area.removeFromTop(40)); // Place pitch slider
+    tempoSlider.setBounds(area.removeFromTop(40)); // Place tempo slider
+    formantCheckbox.setBounds(area.removeFromTop(30)); // Place formant toggle
+    loopToggleButton.setBounds(area.removeFromTop(30)); // Place loop toggle
 
     for (auto& track : tracks)
     {
-        auto row = area.removeFromTop(50);
-        track->volumeSlider.setBounds(row.removeFromLeft(getWidth() - 100));
-        track->muteButton.setBounds(row);
+        auto row = area.removeFromTop(50); // Allocate space for controls
+        track->volumeSlider.setBounds(row.removeFromLeft(getWidth() - 100)); // Place volume
+        track->muteButton.setBounds(row); // Place mute
 
-        auto meterRow = area.removeFromTop(20);
-        track->rmsLabel.setBounds(meterRow.removeFromLeft(getWidth() / 2));
-        track->peakLabel.setBounds(meterRow);
+        auto meterRow = area.removeFromTop(20); // Allocate for meters
+        track->rmsLabel.setBounds(meterRow.removeFromLeft(getWidth() / 2)); // Place RMS
+        track->peakLabel.setBounds(meterRow); // Place peak
     }
 }
 
 //==============================================================================
-// Updates playback time and metering display every 100ms
+// Updates UI and handles loop exit logic every 100ms
 void MainComponent::timerCallback()
 {
-    if (!tracks.empty() && state == Playing)
+    // === UPDATE POSITION LABEL ===
+    if (!tracks.empty() && state == Playing) // Only update if we're currently playing
     {
-        auto pos = tracks.front()->transportSource.getCurrentPosition();
-        int mins = int(pos) / 60;
-        int secs = int(pos) % 60;
-        int millis = int(pos * 1000) % 1000;
+        // Get the position and total length of the first track
+        double currentPosition = tracks.front()->transportSource.getCurrentPosition();
+        double trackLength = tracks.front()->transportSource.getLengthInSeconds();
 
+        // If looping is enabled and position has wrapped, reset the display position
+        if (loopToggleButton.getToggleState() && currentPosition > trackLength)
+            currentPosition = std::fmod(currentPosition, trackLength);
+
+        // Convert position to minutes, seconds, milliseconds
+        int mins = int(currentPosition) / 60;
+        int secs = int(currentPosition) % 60;
+        int millis = int(currentPosition * 1000) % 1000;
+
+        // Display the formatted time (e.g., Position: 0:01.234)
         positionLabel.setText("Position: " + juce::String(mins) + ":" +
                               juce::String(secs).paddedLeft('0', 2) + "." +
                               juce::String(millis).paddedLeft('0', 3),
                               juce::dontSendNotification);
     }
 
+    // === UPDATE METERS FOR EACH TRACK ===
     for (auto& track : tracks)
     {
-        float rms = track->getRMSLevel();
-        float peak = track->getPeakLevel();
+        float rms = track->getRMSLevel();  // Measure current RMS level
+        float peak = track->getPeakLevel(); // Measure current peak level
 
-        track->rmsLabel.setText("RMS: " + juce::String(juce::Decibels::gainToDecibels(rms), 1), juce::dontSendNotification);
-        track->peakLabel.setText("Peak: " + juce::String(juce::Decibels::gainToDecibels(peak), 1), juce::dontSendNotification);
+        // Update the RMS and Peak labels
+        track->rmsLabel.setText("RMS: " + juce::String(juce::Decibels::gainToDecibels(rms), 1),
+                                juce::dontSendNotification);
+        track->peakLabel.setText("Peak: " + juce::String(juce::Decibels::gainToDecibels(peak), 1),
+                                 juce::dontSendNotification);
     }
 }
 
 //==============================================================================
-// Handles playback state transitions and loop behavior
+// Handles play button click
+void MainComponent::playButtonClicked()
+{
+    // If we're stopped or paused, begin playing
+    if (state == Stopped || state == Paused)
+        changeState(Starting); // Move to starting state
+
+    // If already playing, pause playback
+    else if (state == Playing)
+        changeState(Pausing); // Move to pausing state
+}
+
+//==============================================================================
+// Handles stop button click
+void MainComponent::stopButtonClicked()
+{
+    // If paused, return to zero
+    if (state == Paused)
+        changeState(Stopped); // Fully stop and rewind
+
+    // Otherwise, initiate stop
+    else
+        changeState(Stopping); // Stop playback
+}
+
+//==============================================================================
+// Handles playback state transitions
 void MainComponent::changeState(TransportState newState)
 {
+    // Skip if there's no change
     if (state != newState)
     {
-        state = newState;
+        state = newState; // Update state
 
         switch (state)
         {
             case Stopped:
+                // Update buttons
                 playButton.setButtonText("Play");
                 stopButton.setButtonText("Stop");
                 stopButton.setEnabled(false);
+
+                // Reset track position
                 for (auto& track : tracks)
                     track->transportSource.setPosition(0.0);
                 break;
@@ -290,60 +362,47 @@ void MainComponent::changeState(TransportState newState)
             case Starting:
                 for (auto& track : tracks)
                 {
-                    bool shouldLoop = loopToggleButton.getToggleState();
+                    bool shouldLoop = loopToggleButton.getToggleState(); // Check loop state
 
-                    // 🔁 Critical: set loop on both sources
+                    // Apply looping config
                     if (track->readerSource)
                         track->readerSource->setLooping(shouldLoop);
 
                     track->transportSource.setLooping(shouldLoop);
-                    track->transportSource.start();
+
+                    if (shouldLoop)
+                        track->wasLooping = true; // Record active looping
+
+                    track->transportSource.start(); // Begin playback
                 }
-                changeState(Playing);
+
+                changeState(Playing); // Transition immediately to playing
                 break;
 
             case Playing:
-                playButton.setButtonText("Pause");
+                playButton.setButtonText("Pause"); // Update button
                 stopButton.setButtonText("Stop");
-                stopButton.setEnabled(true);
+                stopButton.setEnabled(true); // Enable stop
                 break;
 
             case Pausing:
                 for (auto& track : tracks)
-                    track->transportSource.stop();
-                changeState(Paused);
+                    track->transportSource.stop(); // Stop audio but keep position
+
+                changeState(Paused); // Move to paused state
                 break;
 
             case Paused:
-                playButton.setButtonText("Resume");
+                playButton.setButtonText("Resume"); // Update button
                 stopButton.setButtonText("Return to Zero");
                 break;
 
             case Stopping:
                 for (auto& track : tracks)
-                    track->transportSource.stop();
-                changeState(Stopped);
+                    track->transportSource.stop(); // Stop and reset
+
+                changeState(Stopped); // Move to full stop
                 break;
         }
     }
-}
-
-//==============================================================================
-// Handles play button click logic
-void MainComponent::playButtonClicked()
-{
-    if (state == Stopped || state == Paused)
-        changeState(Starting);
-    else if (state == Playing)
-        changeState(Pausing);
-}
-
-//==============================================================================
-// Handles stop button click logic
-void MainComponent::stopButtonClicked()
-{
-    if (state == Paused)
-        changeState(Stopped);
-    else
-        changeState(Stopping);
 }

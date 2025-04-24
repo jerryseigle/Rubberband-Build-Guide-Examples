@@ -42,6 +42,9 @@ struct Track
     float currentVolume = 1.0f;     // Current volume (0.0 - 1.0)
     bool isMuted = false;          // Mute flag
     bool isPercussive = false;     // Used to route track to drum or music processor
+    bool wasLooping = false;       // Tracks if looping was previously enabled
+    
+    double lastPosition = 0.0; // Used to detect loop wraparound
 
     juce::AudioBuffer<float> lastBuffer; // Stores last played audio block for metering
 
